@@ -13,90 +13,53 @@
 
 #include "clause.h"
 #include "solver.h"
+#include "watch_list.h"
 #include "utils/mem.h"
 
 //===------------------------------------------------------------------------===
 // Solver internal functions
 //===------------------------------------------------------------------------===
-/** 
- * This functions assumes that variables are being assinged in an ascending
- * order and clause literals are ordered in a descending order.
- *
- * The propagation of a literal begins by removing all occurences of it's 
- * negated form from the remaining set of clauses. If in this process an empty
- * clause is created, then we need to re-evaluate our assigments. The function
- * returns 0, which singals a conflict(problem) to the search procedure.
- * 
- * After that, all clauses satisfied by this assignment are removed from the 
- * occurence lists of all variables that have not been assigned yet. (Removes 
- * satisfied clauses from the set of remaining clauses).
- */
-uint32_t
-solver_propagate(solver_t *s, uint32_t lit)
+static inline uint32_t
+solver_decide(solver_t *s)
 {
-	uint32_t i, cref;
-	uint32_t neg_lit = lit_neg(lit); 
-	vec_ui32_t *occ_list;
-	
-	s->n_nodes++;
+	uint32_t next_var = UNDEF;
 
-	occ_list = wec_ui32_at(s->occ_lists, neg_lit);
-	vec_ui32_foreach(occ_list, cref, i) {
-		struct clause *c = clause_read(s, cref);
+	while (next_var == UNDEF || var_value(s, next_var) != VAR_UNASSING) {
+		if (vec_size(s->var_order) == 0) {
+			next_var = UNDEF;
+			return UNDEF;
+		}
+		next_var = vec_at(s->var_order, 0);
+		vec_drop(s->var_order, 0);
+	}
+	return var2lit(next_var, LIT_FALSE);
+}
 
-		if (c->size == 1) {
-			uint32_t k;
-			vec_ui32_foreach_stop(occ_list, cref, k, i) {
-				c = clause_read(s, cref);
-				c->size++;
-			}
-			return 0;
-		}
-		c->size--;
-	}
-	occ_list = wec_ui32_at(s->occ_lists, lit);
-	vec_ui32_foreach(occ_list, cref, i) {
-		struct clause *c = clause_read(s, cref);
-		for (uint32_t j = 0; j < (c->size - 1); j++) {
-			uint32_t idx = vec_find(wec_ui32_at(s->occ_lists, c->lits[j]), cref);
-			vec_drop(wec_ui32_at(s->occ_lists, c->lits[j]), idx);
-		}
-		s->n_act_cls--;
-	}
-	return 1;
+static inline void
+solver_new_decision(solver_t *s, uint32_t lit)
+{
+	assert(var_value(s, lit2var(lit)) == VAR_UNASSING);
+	vec_push_back(s->trail_lim, vec_size(s->trail));
+	solver_enqueue(s, lit);
 }
 
 /** 
- * This functions assumes that variables are being assinged in an ascending
- * order and clause literals are ordered in a descending order.
  *
- * The backtraking of a literal begins by adding back all occurences of it's 
- * negated form to the remaining set of clauses. 
- * 
- * After that, all clauses which were satisfied by it are added back to the 
- * occurence lists of all variables that have not been assigned yet. (Adds
- * previously satisfied clauses back the set of remaining clauses).
  */
-void
-solver_backtrack(solver_t *s, uint32_t lit)
+static inline void 
+solver_backtrack(solver_t *s)
 {
-	uint32_t i, cref;
-	uint32_t neg_lit = lit_neg(lit); 
-	vec_ui32_t *occ_list;
-	
-	occ_list = wec_ui32_at(s->occ_lists, neg_lit);
-	vec_ui32_foreach(occ_list, cref, i) {
-		struct clause *c = clause_read(s, cref);
-		c->size++;
+	uint32_t level = solver_dlevel(s) - 1;
+	for (uint32_t i = vec_size(s->trail); i-- > vec_at(s->trail_lim, level); ) {
+		uint32_t var = lit2var(vec_at(s->trail, i));
+
+		vec_assign(s->assigns, var, VAR_UNASSING);
+		vec_push_back(s->var_order, var);
 	}
-	occ_list = wec_ui32_at(s->occ_lists, lit);
-	vec_ui32_foreach(occ_list, cref, i) {
-		struct clause *c = clause_read(s, cref);
-		for (uint32_t j = 0; j < (c->size - 1); j++) {
-			vec_push_back(wec_ui32_at(s->occ_lists, c->lits[j]), cref);
-		}
-		s->n_act_cls++;
-	}
+	vec_sort(s->var_order, 1);
+	s->i_qhead = vec_at(s->trail_lim, level);
+	vec_shrink(s->trail, vec_at(s->trail_lim, level));
+	vec_shrink(s->trail_lim, level);
 }
 
 //===------------------------------------------------------------------------===
@@ -115,56 +78,129 @@ uint32_t
 solver_clause_create(solver_t *s, vec_ui32_t *lits)
 {
 	struct clause *clause;
-	uint32_t lit, i;
 	uint32_t cref;
 	uint32_t n_words;
 
-	assert(vec_size(lits) >= 1);
+	assert(vec_size(lits) > 1);
+
 	n_words = 1 + vec_size(lits);
 	cref = cdb_append(s->clause_db, n_words);
 	clause = clause_read(s, cref);
 	clause->size = vec_size(lits);
-	vec_ui32_foreach(lits, lit, i) {
-		clause->lits[i] = lit;
-		vec_push_back(s->occ_lists->data + lit, cref);
-	}
+	memcpy(&(clause->lits[0]), vec_data(lits), sizeof(uint32_t) * vec_size(lits));
+
 	vec_push_back(s->clauses, cref);
-	s->n_act_cls += 1;
+	s->stats.n_lits += vec_size(lits);
 	return cref;
 }
 
+uint32_t
+solver_propagate(solver_t *s)
+{
+	uint32_t conf_cref = UNDEF;
+	uint32_t n_propagations = 0;
+
+	while (s->i_qhead < vec_size(s->trail)) {
+		uint32_t lit = vec_at(s->trail, s->i_qhead++);
+		uint32_t neg_lit;
+		uint32_t *lits;
+		struct watch_list *ws;
+		struct watcher *begin;
+		struct watcher *end;
+		struct watcher *i, *j;
+
+		n_propagations++;
+		watch_list_foreach_bin(s->watches, i, lit) {
+			if (var_value(s, lit2var(i->blocker)) == VAR_UNASSING)
+				solver_enqueue(s, i->blocker);
+			else if (lit_value(s, i->blocker) == LIT_FALSE)
+				return i->cref;
+		}
+
+		ws = vec_wl_at(s->watches, lit);
+		begin = watch_list_array(ws);
+		end = begin + watch_list_size(ws);
+		for (i = j = begin + ws->n_bin; i < end;) {
+			struct clause *clause;
+			struct watcher w;
+
+			if (lit_value(s, i->blocker) == LIT_TRUE) {
+				*j++ = *i++;
+				continue;
+			}
+
+			clause = clause_read(s, i->cref);
+			lits = &(clause->lits[0]);
+
+			// Make sure the false literal is data[1]:
+			neg_lit = lit_neg(lit);
+			if (lits[0] == neg_lit)
+				STM_SWAP(uint32_t, lits[0], lits[1]);
+			assert(lits[1] == neg_lit);
+
+			w.cref = i->cref;
+			w.blocker = lits[0];
+
+			/* If 0th watch is true, then clause is already satisfied. */
+			if (lits[0] != i->blocker && lit_value(s, lits[0]) == LIT_TRUE)
+				*j++ = w;
+			else {
+				/* Look for new watch */
+				for (uint32_t k = 2; k < clause->size; k++) {
+					if (lit_value(s, lits[k]) != LIT_FALSE) {
+						lits[1] = lits[k];
+						lits[k] = neg_lit;
+						watch_list_push(vec_wl_at(s->watches, lit_neg(lits[1])), w, 0);
+						goto next;
+					}
+				}
+
+				*j++ = w;
+
+				/* Clause becomes unit under this assignment */
+				if (lit_value(s, lits[0]) == LIT_FALSE) {
+					conf_cref = i->cref;
+					s->i_qhead = vec_size(s->trail);
+					i++;
+					// Copy the remaining watches:
+					while (i < end)
+						*j++ = *i++;
+				} else
+					solver_enqueue(s, lits[0]);
+			}
+		next:
+			i++;
+		}
+
+		s->stats.n_inspects += j - watch_list_array(ws);
+		watch_list_shrink(ws, j - watch_list_array(ws));
+	}
+	s->stats.n_propagations += n_propagations;
+	return conf_cref;
+}
+
 /**
- * Search for a solution that satisfies a problem on n variables by first 
- * assigning the positive polarity to variables. When this doesn't work for a
- * variable n, we try the negative polarity, and if the it still doesn't work 
- * we backtrack. This process of assigment and backtrack keeps going until we
- * succeed in finding a satisfiable assignment or run out of possible
- * assignments.
+ *
  */
 int
 solver_search(solver_t *s)
 {
-	uint32_t level = 0;
-	uint32_t lit = 0;
-
-	while (1) { 
-		uint32_t status = solver_propagate(s, lit);
-		if (status == 0) {
-			while (vec_at(s->assigns, level) == LIT_FALSE) {
-				if (level == 0)
-					return SATOMI_UNSAT;
-				vec_assign(s->assigns, level, LIT_TRUE);
-				level -= 1;
-				lit = (level << 1) | vec_at(s->assigns, level);
-				solver_backtrack(s, lit);
-			}
-			vec_assign(s->assigns, level, LIT_FALSE);
-			lit += 1; 
+	while (1) {
+		uint32_t confl_cref = solver_propagate(s);
+		uint32_t next_lit;
+		if (confl_cref != UNDEF) {
+			s->stats.n_conflicts++;
+			if (solver_dlevel(s) == 0)
+				return SATOMI_UNSAT;
+			next_lit = solver_last_decision(s);
+			solver_backtrack(s);
+			solver_enqueue(s, lit_neg(next_lit));
 		} else {
-			if (s->n_act_cls == 0)
+			s->stats.n_decisions++;
+			next_lit = solver_decide(s);
+			if (next_lit == UNDEF)
 				return SATOMI_SAT;
-			level += 1;
-			lit = (level << 1);
+			solver_new_decision(s, next_lit);
 		}
 	}
 }

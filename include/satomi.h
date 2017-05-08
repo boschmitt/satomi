@@ -26,6 +26,16 @@ enum {
 struct solver_t_;
 typedef struct solver_t_ satomi_t;
 
+struct satomi_stats {
+	uint64_t n_decisions;
+	uint64_t n_propagations;
+	uint64_t n_inspects;
+	uint64_t n_conflicts;
+
+	uint64_t n_lits;
+	double init_time;
+};
+
 //===------------------------------------------------------------------------===
 extern satomi_t *satomi_create(void);
 extern void satomi_destroy(satomi_t *);
@@ -33,10 +43,8 @@ extern int  satomi_parse_dimacs(char *, satomi_t **);
 extern void satomi_add_variable(satomi_t *);
 extern int  satomi_add_clause(satomi_t *, uint32_t *, uint32_t);
 extern int  satomi_solve(satomi_t *);
-extern void satomi_print_problem_stats(satomi_t *);
-extern void satomi_print_search_stats(satomi_t *);
 
+extern void satomi_print_stats(satomi_t *);
 extern void satomi_print_clauses(satomi_t *);
-extern void satomi_print_occ_lists(satomi_t *);
 
 #endif /* SATOMI__SATOMI_H */

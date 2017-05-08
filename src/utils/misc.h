@@ -19,6 +19,8 @@
 #include <mach/mach.h>
 #endif
 
+#define STM_SWAP(type, a, b)  { type t = a; a = b; b = t; }
+
 static inline int
 stm_ui32_comp_desc(const void *p1, const void *p2)
 {

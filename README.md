@@ -4,23 +4,7 @@ Satomi is a SAT solver developed for my own education as I venture in the world
 of EDA and CAD tools. My intent it to evolve this solver as I learn different
 approaches and techniques. 
 
-## Version 0
-This version tries to solve a satisfiability problem on n variables by first 
-assigning the **positive** polarity to the nth variable, then using the same
-idea recursively on the remaining (n − 1)-variable problem. If this doesn’t 
-work, we try the **negative** polarity for the nth variable, and the result will
-either succeed or fail. Variables are assingen in ascending order.
-
-The solver is essentially composed of:
-1. Assignments Vector: store the current assigment of each variable.
-2. Occurences Lists: store for each literal a list of all clauses where it occurs.
-3. Clause Database.
-
-### Limitations
-Obvious limitations:
-* Variables are assigned in ascending order.
-* Doesn't take advantage of pure literals.
-* Doesn't take advantage of unit clauses.
+## Version 1
 
 ## Clauses and Clauses Database
 Each clause is represented by its current size and by an array of literals,

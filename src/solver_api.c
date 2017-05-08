@@ -16,7 +16,6 @@
 #include "utils/mem.h"
 #include "utils/misc.h" 
 #include "utils/vec/vec.h"
-#include "utils/wec/wec_ui32.h"
 
 //===------------------------------------------------------------------------===
 // Satoko external functions
@@ -29,13 +28,15 @@ satomi_create()
 	/* Clauses Database */
 	s->clauses = vec_ui32_alloc(0);
 	s->clause_db = cdb_alloc(0);
+	s->watches = vec_wl_alloc(0);
 	/* Variable Information */
-	s->occ_lists = wec_ui32_alloc(0);
+	s->var_order = vec_ui32_alloc(0);
 	s->assigns = vec_ui8_alloc(0);
+	/* Assignments */
+	s->trail = vec_ui32_alloc(0);
+	s->trail_lim = vec_ui32_alloc(0);
 	/* Temporary data */
 	s->temp_lits = vec_ui32_alloc(0);
-	/* Search Statistics */
-	s->n_nodes = 1;
 	return s;
 }
 
@@ -44,8 +45,11 @@ satomi_destroy(solver_t *s)
 {
 	vec_free(s->clauses);
 	cdb_free(s->clause_db);
-	wec_ui32_free(s->occ_lists);
+	vec_wl_free(s->watches);
+	vec_free(s->var_order);
 	vec_free(s->assigns);
+	vec_free(s->trail);
+	vec_free(s->trail_lim);
 	vec_free(s->temp_lits);
 	STM_FREE(s);
 }
@@ -53,9 +57,11 @@ satomi_destroy(solver_t *s)
 void
 satomi_add_variable(solver_t *s) 
 {
-	wec_ui32_push_level(s->occ_lists);
-	wec_ui32_push_level(s->occ_lists);
-	vec_push_back(s->assigns, LIT_TRUE);
+	uint32_t var = vec_size(s->var_order);
+	vec_wl_push(s->watches);
+	vec_wl_push(s->watches);
+	vec_push_back(s->assigns, VAR_UNASSING);
+	vec_push_back(s->var_order, var);
 }
 
 int
@@ -65,16 +71,16 @@ satomi_add_clause(solver_t *s, uint32_t *lits, uint32_t size)
 
 	qsort((void *) lits, size, sizeof(uint32_t), stm_ui32_comp_desc);
 	max_var = lit2var(lits[0]);
-	while (max_var >= (wec_ui32_size(s->occ_lists) >> 1))
+	while (max_var >= vec_size(s->var_order))
 		satomi_add_variable(s);
 
 	vec_clear(s->temp_lits);
 	uint32_t cref;
 	uint32_t prev_lit = UNDEF;
 	for (uint32_t i = 0; i < size; i++) {
-		if (lits[i] == lit_neg(prev_lit))
+		if (lits[i] == lit_neg(prev_lit) || lit_value(s, lits[i]) == LIT_TRUE)
 			return SATOMI_OK;
-		else if (lits[i] != prev_lit) {
+		else if (lits[i] != prev_lit && var_value(s, lit2var(lits[i])) == VAR_UNASSING) {
 			prev_lit = lits[i];
 			vec_push_back(s->temp_lits, lits[i]);
 		}
@@ -82,7 +88,13 @@ satomi_add_clause(solver_t *s, uint32_t *lits, uint32_t size)
 
 	if (vec_size(s->temp_lits) == 0)
 		return SATOMI_ERR;
+	if (vec_size(s->temp_lits) == 1) {
+		solver_enqueue(s, vec_at(s->temp_lits, 0));
+		return (solver_propagate(s) == UNDEF);
+	}
+
 	cref = solver_clause_create(s, s->temp_lits);
+	clause_watch(s, cref);
 	return SATOMI_OK;
 }
 
@@ -92,28 +104,21 @@ satomi_solve(solver_t *s)
 	int status = SATOMI_UNDEC;
 
 	assert(s);
-	s->init_time = stm_clock();
+	s->stats.init_time = stm_clock();
 	status = solver_search(s);
 	return status;
 }
 
 void
-satomi_print_problem_stats(solver_t *s)
+satomi_print_stats(solver_t *s)
 {
-	double elapsed_time = stm_clock() - s->init_time;
-	fprintf(stdout, "Number of vars: %-6u\n",
-	        (wec_ui32_size(s->occ_lists) >> 1));
-	fprintf(stdout, "Number of clauses: %-10u\n", vec_size(s->clauses));
-}
-
-
-void
-satomi_print_search_stats(solver_t *s)
-{
-	double elapsed_time = stm_clock() - s->init_time;
-	fprintf(stdout, "Visited nodes : %-12lld  (%.0f /sec)\n",
-	        s->n_nodes, (s->n_nodes/ elapsed_time));
-	fprintf(stdout, "CPU time     : %g \n", elapsed_time);
+	double elapsed_time = stm_clock() - s->stats.init_time;
+	fprintf(stdout, "conflicts    : %-12lld\n", s->stats.n_conflicts);
+	fprintf(stdout, "decisions    : %-12lld  (%.0f /sec)\n", 
+	        s->stats.n_decisions, (s->stats.n_decisions/ elapsed_time));
+	fprintf(stdout, "propagations : %-12lld  (%.0f /sec)\n",
+	        s->stats.n_propagations, (s->stats.n_propagations/ elapsed_time));
+	fprintf(stdout, "cpu time     : %g s\n", elapsed_time);
 }
 
 //===------------------------------------------------------------------------===
@@ -129,11 +134,4 @@ satomi_print_clauses(solver_t *s)
 		struct clause *c = clause_read(s, cref);
 		clause_print(c);
 	}
-}
-
-void
-satomi_print_occ_lists(solver_t *s)
-{
-	fprintf(stdout, "Print Occurence Lists:\n");
-	wec_ui32_print(s->occ_lists);
 }

@@ -57,7 +57,7 @@ main(int argc, char **argv)
 	while ((opt = getopt(argc, argv, "vh")) != -1) {
 		switch (opt) {
 		case 'v':
-			fprintf(stdout, "[satomi] Version: 0.0\n");
+			fprintf(stdout, "[satomi] Version: 1.0\n");
 			exit(EXIT_SUCCESS);
 
 		case 'h':
@@ -70,7 +70,7 @@ main(int argc, char **argv)
 	if (optind == argc)
 		satomi_usage(EXIT_FAILURE);
 
-	fprintf(stdout, "[satomi] Version: 0.0\n");
+	fprintf(stdout, "[satomi] Version: 1.0\n");
 
 	fname = strdup(argv[optind]);
 	if ((dot = strrchr(fname, '.')) == NULL) {
@@ -83,9 +83,9 @@ main(int argc, char **argv)
 	}
 
 	satomi_parse_dimacs(fname, &solver);
-	satomi_print_problem_stats(solver);
 	status = satomi_solve(solver);
-	satomi_print_search_stats(solver);
+	if (1)
+		satomi_print_stats(solver);
 	if (status == SATOMI_UNDEC)
 		fprintf(stdout, "UNDECIDED    \n");
 	else if (status == SATOMI_SAT)
