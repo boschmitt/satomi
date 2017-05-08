@@ -32,7 +32,15 @@ Papers:
 * Davis, P., and Putnam, H. A Computing Procedure for Quantification Theory. 
   Journal of the ACM (1960).
 * Davis, P., Logemann, G., and Loveland, D. A Machine Program for Theorem Proving.
-  Communications of the ACM (1962) 
+  Communications of the ACM (1962)
+* Matthew W. Moskewicz, Conor F. Madigan, Ying Zhao, Lintao Zhang, and Sharad Malik.
+  2001. Chaff: engineering an efficient SAT solver. In Proceedings of the 38th annual
+  Design Automation Conference (DAC '01). ACM, New York, NY, USA, 530-535.
+* Chu, Geoffrey, Aaron Harwood, and Peter J. Stuckey. "Cache conscious data structures
+  for boolean satisfiability solvers." Journal on Satisfiability, Boolean Modeling and
+  Computation 6 (2008): 99-120.
+* Sorensson, Niklas. "Minisat 2.2 and minisat++ 1.1." A short description in SAT Race 
+  2010 (2010).
 
 Books:
 * The Art of Computer Programming, Volume 4, Fascicle 6: Satisfiability by 
