@@ -21,22 +21,30 @@
 // Satoko external functions
 //===------------------------------------------------------------------------===
 solver_t *
-satomi_create()
+satomi_create(char *fname)
 {
 	solver_t *s = STM_CALLOC(solver_t, 1);
 
+	satomi_default_opts(&s->opts);
+	/* Input info */
+	s->fname = fname; 
 	/* Clauses Database */
 	s->clauses = vec_ui32_alloc(0);
 	s->clause_db = cdb_alloc(0);
 	s->watches = vec_wl_alloc(0);
 	/* Variable Information */
 	s->var_order = vec_ui32_alloc(0);
+	s->levels = vec_ui32_alloc(0);
+	s->reasons = vec_ui32_alloc(0);
 	s->assigns = vec_ui8_alloc(0);
 	/* Assignments */
 	s->trail = vec_ui32_alloc(0);
 	s->trail_lim = vec_ui32_alloc(0);
 	/* Temporary data */
 	s->temp_lits = vec_ui32_alloc(0);
+	s->seen = vec_ui8_alloc(0);
+	s->tagged = vec_ui32_alloc(0);
+	s->stack = vec_ui32_alloc(0);
 	return s;
 }
 
@@ -47,11 +55,32 @@ satomi_destroy(solver_t *s)
 	cdb_free(s->clause_db);
 	vec_wl_free(s->watches);
 	vec_free(s->var_order);
+	vec_free(s->levels);
+	vec_free(s->reasons);
 	vec_free(s->assigns);
 	vec_free(s->trail);
 	vec_free(s->trail_lim);
 	vec_free(s->temp_lits);
+	vec_free(s->seen);
+	vec_free(s->tagged);
+	vec_free(s->stack);
 	STM_FREE(s);
+}
+
+void
+satomi_default_opts(satomi_opts_t *opts)
+{
+	opts->verbose = 1;
+}
+
+/**
+ * TODO: sanity check on configuration options
+ */
+void
+satomi_configure(satomi_t *s, satomi_opts_t *user_opts)
+{
+	assert(user_opts);
+	memcpy(&s->opts, user_opts, sizeof(satomi_opts_t));
 }
 
 void
@@ -60,7 +89,10 @@ satomi_add_variable(solver_t *s)
 	uint32_t var = vec_size(s->var_order);
 	vec_wl_push(s->watches);
 	vec_wl_push(s->watches);
+	vec_push_back(s->levels, 0);
 	vec_push_back(s->assigns, VAR_UNASSING);
+	vec_push_back(s->reasons, UNDEF);
+	vec_push_back(s->seen, 0);
 	vec_push_back(s->var_order, var);
 }
 
@@ -89,7 +121,7 @@ satomi_add_clause(solver_t *s, uint32_t *lits, uint32_t size)
 	if (vec_size(s->temp_lits) == 0)
 		return SATOMI_ERR;
 	if (vec_size(s->temp_lits) == 1) {
-		solver_enqueue(s, vec_at(s->temp_lits, 0));
+		solver_enqueue(s, vec_at(s->temp_lits, 0), UNDEF);
 		return (solver_propagate(s) == UNDEF);
 	}
 

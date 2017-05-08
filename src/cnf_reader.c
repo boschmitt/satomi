@@ -114,6 +114,7 @@ satomi_parse_dimacs(char *fname, satomi_t **solver)
 	int n_var;
 	int n_clause;
 	char *token = file_open(fname);
+	char *name = strrchr(fname, '/') + 1;
 
 	while (1) {
 		skip_spaces(&token);
@@ -130,7 +131,7 @@ satomi_parse_dimacs(char *fname, satomi_t **solver)
 			n_clause = read_int(&token);
 			skip_line(&token);
 			lits = vec_ui32_alloc((uint32_t) n_var);
-			p = satomi_create();
+			p = satomi_create(name);
 		} else {
 			if (lits == NULL) {
 				fprintf(stdout, "There is no parameter line.\n");

@@ -40,20 +40,22 @@ solver_new_decision(solver_t *s, uint32_t lit)
 {
 	assert(var_value(s, lit2var(lit)) == VAR_UNASSING);
 	vec_push_back(s->trail_lim, vec_size(s->trail));
-	solver_enqueue(s, lit);
+	solver_enqueue(s, lit, UNDEF);
 }
 
 /** 
  *
  */
 static inline void 
-solver_backtrack(solver_t *s)
+solver_backjump(solver_t *s, uint32_t level)
 {
-	uint32_t level = solver_dlevel(s) - 1;
+	if (solver_dlevel(s) <= level)
+		return;
 	for (uint32_t i = vec_size(s->trail); i-- > vec_at(s->trail_lim, level); ) {
 		uint32_t var = lit2var(vec_at(s->trail, i));
 
 		vec_assign(s->assigns, var, VAR_UNASSING);
+		vec_assign(s->reasons, var, UNDEF);
 		vec_push_back(s->var_order, var);
 	}
 	vec_sort(s->var_order, 1);
@@ -62,6 +64,246 @@ solver_backtrack(solver_t *s)
 	vec_shrink(s->trail_lim, level);
 }
 
+/* Calculate Backtrack Level from the learnt clause */
+static inline uint32_t
+solver_calc_bt_level(solver_t *s, vec_ui32_t *learnt)
+{
+	uint32_t i, tmp;
+        uint32_t i_max = 1;
+	uint32_t *lits = vec_data(learnt);
+        uint32_t max = lit_dlevel(s, lits[1]);
+
+	if (vec_size(learnt) == 1)
+		return 0;
+	for (i = 2; i < vec_size(learnt); i++) {
+		if (lit_dlevel(s, lits[i]) > max) {
+			max   = lit_dlevel(s, lits[i]);
+			i_max = i;
+		}
+	}
+        tmp         = lits[1];
+        lits[1]     = lits[i_max];
+        lits[i_max] = tmp;
+        return lit_dlevel(s, lits[1]);
+}
+
+/**
+ *  Most books and papers explain conflict analysis and the calculation of the
+ *  1UIP (first Unique Implication Point) using an implication graph. This
+ *  function, however, do not explicity constructs the graph! It inspects the
+ *  trail in reverse and figure out which literals should be added to the
+ *  to-be-learnt clause using the reasons of each assignment.
+ *
+ *  cur_lit: current literal being analyzed.
+ *  n_paths: number of unprocessed paths from conlfict node to the current
+ *           literal being analyzed (cur_lit).
+ *
+ *  This functions performs a backward BFS (breadth-first search) for 1UIP node.
+ *  The trail works as the BFS queue. The counter of unprocessed but seen
+ *  variables (n_paths) allows us to identify when 'cur_lit' is the closest
+ *  cause of conflict.
+ *
+ *  When 'n_paths' reaches zero it means there are no unprocessed reverse paths
+ *  back from the conflict node to 'cur_lit' - meaning it is the 1UIP decision
+ *  variable.
+ *
+ */
+static inline void
+solver_analyze(solver_t *s, uint32_t cref, vec_ui32_t *learnt, uint32_t *bt_level)
+{
+	uint32_t i;
+	uint32_t *trail = vec_data(s->trail);
+	uint32_t idx = vec_size(s->trail) - 1;
+	uint32_t n_paths = 0;
+	uint32_t p = UNDEF;
+	uint32_t lit, var;
+
+	vec_push_back(learnt, UNDEF);
+	do {
+		struct clause *clause;
+		uint32_t *lits;
+		uint32_t j;
+
+		assert(cref != UNDEF);
+		clause = clause_read(s, cref);
+		lits = &(clause->lits[0]);
+
+		if (p != UNDEF && clause->size == 2 && lit_value(s, lits[0]) == LIT_FALSE) {
+			assert(lit_value(s, lits[1]) == LIT_TRUE);
+			STM_SWAP(uint32_t, lits[0], lits[1] );
+		}
+
+		for (j = (p == UNDEF ? 0 : 1); j < clause->size; j++) {
+			var = lit2var(lits[j]);
+			if (vec_at(s->seen, var) || var_dlevel(s, var) == 0)
+				continue;
+			vec_assign(s->seen, var, 1);
+			if (var_dlevel(s, var) == solver_dlevel(s)) {
+				n_paths++;
+			} else
+				vec_push_back(learnt, lits[j]);
+		}
+
+		while (!vec_at(s->seen, lit2var(trail[idx--])));
+
+		p = trail[idx + 1];
+		cref = lit_reason(s, p);
+		vec_assign(s->seen, lit2var(p), 0);
+		n_paths--;
+	} while (n_paths > 0);
+
+	vec_data(learnt)[0] = lit_neg(p);
+	*bt_level = solver_calc_bt_level(s, learnt);
+	vec_ui32_foreach(learnt, lit, i)
+		vec_assign(s->seen, lit2var(lit), 0);
+}
+
+//===------------------------------------------------------------------------===
+// Functions used to create the implication graph using graphviz.
+// This is based on CryptoMinisat
+//===------------------------------------------------------------------------===
+static inline void
+solver_create_graph_mark_vars(solver_t *s)
+{
+	while (vec_size(s->stack)) {
+		uint32_t var = lit2var(vec_pop_back(s->stack));
+		
+		if (var_reason(s, var) == UNDEF)
+			continue;
+		
+		struct clause *c = clause_read(s, var_reason(s, var));
+		uint32_t *lits = &(c->lits[0]);
+		for (uint32_t i = 0; i < c->size; i++) {
+			var = lit2var(c->lits[i]);
+			if (var_dlevel(s, var) == 0)
+				continue;
+			if (vec_at(s->seen, var))
+				continue;
+
+			vec_push_back(s->stack, c->lits[i]);
+			vec_assign(s->seen, var, 1);
+		}
+	}
+}
+
+static inline void
+solver_create_graph_edges(solver_t *s, FILE *file)
+{
+	uint32_t i, lit;
+	vec_ui32_foreach(s->trail, lit, i) {
+		uint32_t var = lit2var(lit);
+
+		if (var_dlevel(s, var) == 0)
+			continue;
+		if (vec_at(s->seen, var) == 0)
+			continue;
+		if (var_reason(s, var) == UNDEF)
+			continue;
+
+		struct clause *c = clause_read(s, var_reason(s, var));
+		uint32_t *lits = &(c->lits[0]);
+		for (uint32_t j = 0; j < c->size; j++) {
+			if (lits[j] == lit || var_dlevel(s, lit2var(lits[j])) == 0)
+				continue;
+
+			fprintf(file, "x%d -> x%d", lit2var(lits[j]), lit2var(lit));
+			fprintf(file, "[ label=\"");
+			for (uint32_t k = 0; k < c->size; k++) {
+				if (var_dlevel(s, lit2var(lits[k])) == 0)
+					continue;
+				fprintf(file, "%s%d ", 
+				        lit_polarity(lits[k]) ? "-" : "", 
+					lit2var(lits[k]));
+			}
+			fprintf(file, "\", fontsize=8 ];\n");
+		}
+	}
+}
+
+static inline void
+solver_create_graph_nodes(solver_t *s, FILE *file)
+{
+	uint32_t i, lit;
+	vec_ui32_foreach(s->trail, lit, i) {
+		uint32_t var = lit2var(lit);
+
+		if (vec_at(s->seen, var) == 0)
+			continue;
+		vec_assign(s->seen, var, 0);
+
+		fprintf(file, "x%d [ shape=\"box\", style=\"filled\"", var);
+		if (var_reason(s, var) == UNDEF)
+			fprintf(file, ", color=\"#b3cde3\"");
+		else
+			fprintf(file, ", color=\"#ccebc5\"");
+
+		fprintf(file, ", label=\"%sx%d @ %d\" ];\n",  
+		        (lit_polarity(lit) ? "-" : ""), var, var_dlevel(s, var));
+	}
+}
+
+static inline void
+solver_create_graph(solver_t *s, uint32_t cref, vec_ui32_t *learnt, uint32_t *bt_level)
+{
+	uint32_t i, lit;
+	char path[PATH_MAX];
+	char fname[1024];
+	FILE *file;
+
+	sprintf(path, "confls/%s", s->fname);
+	mkdir_p(path);
+	sprintf(fname, "%s/confl_%d.dot", path, s->stats.n_conflicts);
+	file = fopen(fname, "w");
+	if (file == NULL) {
+		fprintf(stdout, "Couldn't open file: %s\n", fname);
+		exit(EXIT_FAILURE);
+	}
+	solver_analyze(s, cref, s->temp_lits, bt_level);
+
+	fprintf(file, "digraph G {\n");
+	fprintf(file, "vertK -> dummy [style=invis];\n");
+	fprintf(file, " dummy [ shape=record, label=\"{");
+	fprintf(file, " Learnt Clause: ");
+	vec_ui32_foreach(learnt, lit, i) 
+		fprintf(file, "%s%d ", lit_polarity(lit) ? "-" : "", lit2var(lit));		
+	fprintf(file, "| Backtrack Level: %d", *bt_level);
+	// fprintf(file, " | {resol: | " << res << " }");
+	fprintf(file, "}\"");
+	fprintf(file, " , fontsize=8");
+	fprintf(file, " ];\n");
+
+	struct clause *clause = clause_read(s, cref);
+	uint32_t *lits = &(clause->lits[0]);
+	vec_clear(s->stack);
+	for (uint32_t j = 0; j < clause->size; j++) {
+		vec_assign(s->seen, lit2var(lits[j]), 1);
+		vec_push_back(s->stack, lits[j]);
+	}
+
+	for (uint32_t j = 0; j < clause->size; j++) {
+	        fprintf(file, "x%d  -> vertK", lit2var(lits[j]));
+		fprintf(file, "[ label=\"");
+		vec_ui32_foreach(s->stack, lit, i) 
+			fprintf(file, "%s%d ", 
+			        lit_polarity(lit) ? "-" : "", lit2var(lit));
+		fprintf(file, "\", fontsize=8 ];\n");
+	}
+
+	/* Special conflict node */
+	fprintf(file, "vertK [ shape=\"box\", style=\"filled\", ");
+	fprintf(file, "color=\"#fbb4ae\", label=\"C : ");
+	vec_ui32_foreach(s->stack, lit, i) 
+		fprintf(file, "%s%d ", 
+		        lit_polarity(lit) ? "-" : "", lit2var(lit));
+	fprintf(file, "\"];\n");
+
+	solver_create_graph_mark_vars(s);
+	solver_create_graph_edges(s, file);
+	solver_create_graph_nodes(s, file);
+
+	fprintf(file, "}\n");
+	fclose(file);
+}
 //===------------------------------------------------------------------------===
 // Solver external functions
 //===------------------------------------------------------------------------===
@@ -112,7 +354,7 @@ solver_propagate(solver_t *s)
 		n_propagations++;
 		watch_list_foreach_bin(s->watches, i, lit) {
 			if (var_value(s, lit2var(i->blocker)) == VAR_UNASSING)
-				solver_enqueue(s, i->blocker);
+				solver_enqueue(s, i->blocker, i->cref);
 			else if (lit_value(s, i->blocker) == LIT_FALSE)
 				return i->cref;
 		}
@@ -166,7 +408,7 @@ solver_propagate(solver_t *s)
 					while (i < end)
 						*j++ = *i++;
 				} else
-					solver_enqueue(s, lits[0]);
+					solver_enqueue(s, lits[0], i->cref);
 			}
 		next:
 			i++;
@@ -189,12 +431,24 @@ solver_search(solver_t *s)
 		uint32_t confl_cref = solver_propagate(s);
 		uint32_t next_lit;
 		if (confl_cref != UNDEF) {
+			uint32_t bt_level;
+			uint32_t cref = UNDEF;
 			s->stats.n_conflicts++;
 			if (solver_dlevel(s) == 0)
 				return SATOMI_UNSAT;
-			next_lit = solver_last_decision(s);
-			solver_backtrack(s);
-			solver_enqueue(s, lit_neg(next_lit));
+
+			vec_clear(s->temp_lits);
+			if (s->opts.verbose & 2)
+				solver_create_graph(s, confl_cref, s->temp_lits, &bt_level);
+			else
+				solver_analyze(s, confl_cref, s->temp_lits, &bt_level);
+
+			solver_backjump(s, bt_level);
+			if (vec_size(s->temp_lits) > 1) {
+				cref = solver_clause_create(s, s->temp_lits);
+				clause_watch(s, cref);
+			}
+			solver_enqueue(s, vec_at(s->temp_lits, 0), cref);
 		} else {
 			s->stats.n_decisions++;
 			next_lit = solver_decide(s);

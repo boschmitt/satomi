@@ -4,7 +4,7 @@ Satomi is a SAT solver developed for my own education as I venture in the world
 of EDA and CAD tools. My intent it to evolve this solver as I learn different
 approaches and techniques. 
 
-## Version 1
+## Version 2
 
 ## Clauses and Clauses Database
 Each clause is represented by its current size and by an array of literals,

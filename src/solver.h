@@ -32,6 +32,9 @@ enum {
 
 typedef struct solver_t_ solver_t;
 struct solver_t_ {
+	/* Input info */
+	char *fname; 
+	
 	/* Clauses Database */
 	vec_ui32_t *clauses;
 	struct cdb *clause_db;
@@ -39,7 +42,10 @@ struct solver_t_ {
 
 	/* Variable Information */
 	vec_ui32_t *var_order;
+	vec_ui32_t *levels;
+	vec_ui32_t *reasons;
 	vec_ui8_t *assigns;
+	vec_ui8_t *polarity;
 
 	/* Assignments */
 	vec_ui32_t *trail;
@@ -48,8 +54,13 @@ struct solver_t_ {
 
 	/* Temporary data */
 	vec_ui32_t *temp_lits;
+	vec_ui8_t *seen;
+	vec_ui32_t *tagged;
+	vec_ui32_t *stack;
+	vec_ui32_t *last_dlevel;
 
 	struct satomi_stats stats;
+	struct satomi_opts opts;
 };
 
 //===------------------------------------------------------------------------===
@@ -70,6 +81,12 @@ lit2var(uint32_t lit) { return lit >> 1; }
 //===------------------------------------------------------------------------===
 static inline uint8_t
 var_value(solver_t *s, uint32_t var) { return vec_at(s->assigns, var); }
+
+static inline uint32_t
+var_dlevel(solver_t *s, uint32_t var) { return vec_at(s->levels, var); }
+
+static inline uint32_t
+var_reason(solver_t *s, uint32_t var) { return vec_at(s->reasons, var); }
 //===------------------------------------------------------------------------===
 // Inline lit functions
 //===------------------------------------------------------------------------===
@@ -84,6 +101,12 @@ lit_value(solver_t *s, uint32_t lit)
 {
 	return lit_polarity(lit) ^ vec_at(s->assigns, lit2var(lit));
 }
+
+static inline uint32_t
+lit_dlevel(solver_t *s, uint32_t lit) { return vec_at(s->levels, lit2var(lit)); }
+
+static inline uint32_t
+lit_reason(solver_t *s, uint32_t lit) { return vec_at(s->reasons, lit2var(lit)); }
 //===------------------------------------------------------------------------===
 // Inline solver minor functions
 //===------------------------------------------------------------------------===
@@ -97,10 +120,13 @@ solver_last_decision(solver_t *s)
 }
 
 static inline int
-solver_enqueue(solver_t *s, uint32_t lit)
+solver_enqueue(solver_t *s, uint32_t lit, uint32_t reason)
 {
 	uint32_t var = lit2var(lit);
+
 	vec_assign(s->assigns, var, lit_polarity(lit));
+	vec_assign(s->levels, var, solver_dlevel(s));
+	vec_assign(s->reasons, var, reason);
 	vec_push_back(s->trail, lit);
 	return SATOMI_OK;
 }

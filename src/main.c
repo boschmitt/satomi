@@ -47,6 +47,7 @@ main(int argc, char **argv)
 	int status;
 	char *fname;
 	char *dot;
+	satomi_opts_t options;
 	/* Opts parsing */
 	int opt;
 	extern int optind;
@@ -54,10 +55,15 @@ main(int argc, char **argv)
 	extern char* optarg;
 
 	signal(SIGINT, exit_SIGINT);
-	while ((opt = getopt(argc, argv, "vh")) != -1) {
+	satomi_default_opts(&options);
+	while ((opt = getopt(argc, argv, "wvh")) != -1) {
 		switch (opt) {
+		case 'w':
+			options.verbose = 2;
+			break;
+
 		case 'v':
-			fprintf(stdout, "[satomi] Version: 1.0\n");
+			fprintf(stdout, "[satomi] Version: 2.0\n");
 			exit(EXIT_SUCCESS);
 
 		case 'h':
@@ -70,7 +76,7 @@ main(int argc, char **argv)
 	if (optind == argc)
 		satomi_usage(EXIT_FAILURE);
 
-	fprintf(stdout, "[satomi] Version: 1.0\n");
+	fprintf(stdout, "[satomi] Version: 2.0\n");
 
 	fname = strdup(argv[optind]);
 	if ((dot = strrchr(fname, '.')) == NULL) {
@@ -83,6 +89,7 @@ main(int argc, char **argv)
 	}
 
 	satomi_parse_dimacs(fname, &solver);
+	satomi_configure(solver, &options);
 	status = satomi_solve(solver);
 	if (1)
 		satomi_print_stats(solver);
