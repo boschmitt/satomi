@@ -444,10 +444,6 @@ solver_search(solver_t *s)
 				solver_analyze(s, confl_cref, s->temp_lits, &bt_level);
 
 			solver_backjump(s, bt_level);
-			if (vec_size(s->temp_lits) > 1) {
-				cref = solver_clause_create(s, s->temp_lits);
-				clause_watch(s, cref);
-			}
 			solver_enqueue(s, vec_at(s->temp_lits, 0), cref);
 		} else {
 			s->stats.n_decisions++;
